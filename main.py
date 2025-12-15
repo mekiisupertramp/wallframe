@@ -4,6 +4,7 @@ import time
 import socket
 import rp2
 import array
+import ujson
 
 
 pin = Pin(22, Pin.OUT)
@@ -47,7 +48,18 @@ def putRGBs(color):
         ar[i] = color
     sm.put(ar,8)
         
+def save_rgb():
+    with open("rgb.json", "w") as fp:
+        ujson.dump({"red": red, "green": green, "blue": blue}, fp)
 
+def load_state():
+    global red, green, blue
+    try:
+        with open("rgb.json") as fp:
+            data = ujson.load(fp)
+            red, green, blue = data.get("red",red), data.get("green",green), data.get("blue",blue)           
+    except OSError:
+        pass 
 
 # Wi-Fi credentials
 ssid = 'Sunrise_4513373'
@@ -127,7 +139,7 @@ s = socket.socket()
 s.bind(addr)
 s.listen(1)
 
-print('Listening on', addr)
+# print('Listening on', addr)
 
 
 i = 0
@@ -135,6 +147,9 @@ for i in range(30):
     time.sleep_ms(30)
     led.value(i%2)
     i=i+1
+
+load_state()
+putRGBs(green << 16 | red << 8 | blue)
 
 while True:        
     # Accept a connection
@@ -157,6 +172,7 @@ while True:
             print('value of green is: ', green)                         
             mode = int(request_str.split('mode=')[1].split("'")[0])
             print('value of mode is: ', mode)
+            save_rgb()
             led.value(1)
             time.sleep_ms(200)
             led.value(0)
