@@ -7,8 +7,6 @@ import array
 import ujson
 
 
-STATE_FILE = "rgb.json"
-
 pin = Pin(22, Pin.OUT)
 ledQty = 2 # 140 for charizard
 
@@ -49,49 +47,19 @@ def putRGBs(color):
     for i in range(ledQty):
         ar[i] = color
     sm.put(ar,8)
-
-def clamp_color(value, fallback):
-    try:
-        value = int(value)
-    except (TypeError, ValueError):
-        return fallback
-    return max(0, min(255, value))
-
-def clamp_mode(value, fallback):
-    try:
-        value = int(value)
-    except (TypeError, ValueError):
-        return fallback
-    if value in (1, 2, 3):
-        return value
-    return fallback
-
-def save_state():
-    with open(STATE_FILE, "w") as fp:
-        ujson.dump({
-            "red": red,
-            "green": green,
-            "blue": blue,
-            "mode": mode,
-        }, fp)
+        
+def save_rgb():
+    with open("rgb.json", "w") as fp:
+        ujson.dump({"red": red, "green": green, "blue": blue}, fp)
 
 def load_state():
-    global red, green, blue, mode
+    global red, green, blue
     try:
-        with open(STATE_FILE) as fp:
+        with open("rgb.json") as fp:
             data = ujson.load(fp)
-            red = clamp_color(data.get("red"), red)
-            green = clamp_color(data.get("green"), green)
-            blue = clamp_color(data.get("blue"), blue)
-            mode = clamp_mode(data.get("mode"), mode)
-    except (OSError, ValueError):
-        save_state()
-
-def get_form_value(request_str, name):
-    marker = name + "="
-    if request_str.find(marker) == -1:
-        return None
-    return request_str.split(marker, 1)[1].split("&", 1)[0].split("'", 1)[0].split("\\r\\n", 1)[0]
+            red, green, blue = data.get("red",red), data.get("green",green), data.get("blue",blue)           
+    except OSError:
+        pass 
 
 # Wi-Fi credentials
 ssid = 'Sunrise_4513373'
@@ -195,21 +163,16 @@ while True:
     
     # Check if it's a GET request to toggle the LED
     if '/setrgb' in request_str:
-        red_value = get_form_value(request_str, "RED")
-        green_value = get_form_value(request_str, "GREEN")
-        blue_value = get_form_value(request_str, "BLUE")
-        mode_value = get_form_value(request_str, "mode")
-
-        if red_value is not None and green_value is not None and blue_value is not None:
-            red = clamp_color(red_value, red)
+        if request_str.find('RED=') != -1:
+            red = int(request_str.split('RED=')[1].split('&')[0])
             print('value of red is: ', red)
-            green = clamp_color(green_value, green)
-            print('value of green is: ', green)
-            blue = clamp_color(blue_value, blue)
-            print('value of blue is: ', blue)                         
-            mode = clamp_mode(mode_value, mode)
+            blue = int(request_str.split('BLUE=')[1].split("&")[0])
+            print('value of blue is: ', blue)
+            green = int(request_str.split('GREEN=')[1].split('&')[0])
+            print('value of green is: ', green)                         
+            mode = int(request_str.split('mode=')[1].split("'")[0])
             print('value of mode is: ', mode)
-            save_state()
+            save_rgb()
             led.value(1)
             time.sleep_ms(200)
             led.value(0)
