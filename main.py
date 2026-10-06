@@ -1,13 +1,17 @@
-from machine import Pin, PWM
+from machine import Pin, PWM, reset
 import network    
 import time
 import socket
 import rp2
 import array
 import ujson
+import os
 
 
 STATE_FILE = "rgb.json"
+UPDATE_FILE = "main.py.new"
+BACKUP_FILE = "main.py.bak"
+MAX_UPLOAD_SIZE = 200000
 
 pin = Pin(22, Pin.OUT)
 ledQty = 2 # 140 for charizard
@@ -93,6 +97,104 @@ def get_form_value(request_str, name):
         return None
     return request_str.split(marker, 1)[1].split("&", 1)[0].split("'", 1)[0].split("\\r\\n", 1)[0]
 
+def get_header(headers, name):
+    name = name.lower() + ":"
+    for line in headers.split("\r\n"):
+        if line.lower().startswith(name):
+            return line.split(":", 1)[1].strip()
+    return None
+
+def remove_if_exists(filename):
+    try:
+        os.remove(filename)
+    except OSError:
+        pass
+
+def install_update():
+    remove_if_exists(BACKUP_FILE)
+    os.rename("main.py", BACKUP_FILE)
+    try:
+        os.rename(UPDATE_FILE, "main.py")
+    except OSError:
+        os.rename(BACKUP_FILE, "main.py")
+        raise
+
+def handle_upload(cl, headers, body):
+    update_installed = False
+    try:
+        content_length = get_header(headers, "Content-Length")
+        content_type = get_header(headers, "Content-Type")
+        if content_length is None or content_type is None:
+            return False, "Missing upload headers"
+
+        content_length = int(content_length)
+        if content_length <= 0 or content_length > MAX_UPLOAD_SIZE:
+            return False, "Upload is empty or too large"
+        if content_type.find("boundary=") == -1:
+            return False, "Missing multipart boundary"
+
+        boundary = content_type.split("boundary=", 1)[1].strip().strip('"')
+        boundary = boundary.encode()
+        end_marker = b"\r\n--" + boundary
+
+        received = len(body)
+        buffer = body
+        while buffer.find(b"\r\n\r\n") == -1:
+            if received >= content_length:
+                return False, "Upload part header was incomplete"
+            chunk = cl.recv(min(1024, content_length - received))
+            if not chunk:
+                return False, "Upload stopped before file data"
+            buffer += chunk
+            received += len(chunk)
+
+        part_header_end = buffer.find(b"\r\n\r\n")
+        part_headers = buffer[:part_header_end].decode()
+        if part_headers.find('name="file"') == -1:
+            return False, "Upload field must be named file"
+
+        data = buffer[part_header_end + 4:]
+        bytes_written = 0
+        keep = len(end_marker)
+
+        remove_if_exists(UPDATE_FILE)
+        with open(UPDATE_FILE, "wb") as fp:
+            while True:
+                marker_index = data.find(end_marker)
+                if marker_index != -1:
+                    fp.write(data[:marker_index])
+                    bytes_written += marker_index
+                    break
+
+                safe_len = len(data) - keep
+                if safe_len > 0:
+                    fp.write(data[:safe_len])
+                    bytes_written += safe_len
+                    data = data[safe_len:]
+
+                if received >= content_length:
+                    return False, "Upload ended before multipart boundary"
+
+                chunk = cl.recv(min(1024, content_length - received))
+                if not chunk:
+                    return False, "Upload connection closed early"
+                data += chunk
+                received += len(chunk)
+
+        if bytes_written == 0:
+            return False, "Uploaded file was empty"
+
+        install_update()
+        update_installed = True
+        return True, "main.py uploaded. Rebooting Pico..."
+    finally:
+        if not update_installed:
+            remove_if_exists(UPDATE_FILE)
+
+def send_html(cl, body):
+    cl.send('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
+    cl.send(body)
+
 # Wi-Fi credentials
 ssid = 'Sunrise_4513373'
 password = 'uh7PbxaR2qridsfj'
@@ -159,6 +261,12 @@ html = """<!DOCTYPE html>
         <input type="radio" value=3 name="mode" {}>        
     </div>
     </form>
+    <hr>
+    <h2>Update code</h2>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".py">
+        <button type="submit">Upload main.py</button>
+    </form>
 </body>
 </html>
 """
@@ -189,9 +297,31 @@ while True:
     print('Client connected from', addr)
     
     # Receive the request
-    request = cl.recv(2048)
+    request = cl.recv(4096)
+    header_end = request.find(b"\r\n\r\n")
+    if header_end != -1:
+        headers = request[:header_end].decode()
+        body = request[header_end + 4:]
+    else:
+        headers = request.decode()
+        body = b""
     request_str = str(request)
-    print(request_str)    
+    print(headers)
+
+    if headers.find("POST /upload") != -1:
+        try:
+            update_ok, update_message = handle_upload(cl, headers, body)
+        except Exception as e:
+            update_ok = False
+            update_message = "Upload failed: " + str(e)
+
+        send_html(cl, "<html><body><p>{}</p><a href='/'>Back</a></body></html>".format(update_message))
+        cl.close()
+
+        if update_ok:
+            time.sleep_ms(500)
+            reset()
+        continue
     
     # Check if it's a GET request to toggle the LED
     if '/setrgb' in request_str:
